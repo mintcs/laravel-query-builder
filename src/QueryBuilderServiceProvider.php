@@ -81,6 +81,14 @@ class QueryBuilderServiceProvider extends ServiceProvider
                     return false;
                 }
 
+                if ($value === 'null') {
+                    return null;
+                }
+
+                if ($value === '!null') {
+                    return 'IS NOT NULL';
+                }
+                                
                 return $value;
             };
 

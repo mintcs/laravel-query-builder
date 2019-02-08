@@ -2,7 +2,9 @@
 
 namespace Spatie\QueryBuilder;
 
+use Illuminate\Support\Str;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\ServiceProvider;
 
 class QueryBuilderServiceProvider extends ServiceProvider
@@ -52,24 +54,20 @@ class QueryBuilderServiceProvider extends ServiceProvider
         });
 
         Request::macro('filters', function ($filter = null) {
-            $filterParts = $this->query(
-                config('query-builder.parameters.filter')
-            );
+            $filterParts = $this->query(config('query-builder.parameters.filter'), []);
 
-            if (! $filterParts) {
+            if (is_string($filterParts)) {
                 return collect();
             }
 
-            $filters = collect($filterParts)->filter(function ($filter) {
-                return ! is_null($filter);
-            });
+            $filters = collect($filterParts);
 
             $filtersMapper = function ($value) {
                 if (is_array($value)) {
-                    return collect($value)->map($this)->all();
+                    return collect($value)->map($this->bindTo($this))->all();
                 }
 
-                if (str_contains($value, ',')) {
+                if (Str::contains($value, ',')) {
                     return explode(',', $value);
                 }
 
@@ -101,12 +99,22 @@ class QueryBuilderServiceProvider extends ServiceProvider
             return $filters->get(strtolower($filter));
         });
 
-        Request::macro('sort', function ($default = null) {
-            return $this->query(config('query-builder.parameters.sort'), $default);
+        Request::macro('fields', function (): Collection {
+            $fieldsParameter = config('query-builder.parameters.fields');
+
+            $fieldsPerTable = collect($this->query($fieldsParameter));
+
+            if ($fieldsPerTable->isEmpty()) {
+                return collect();
+            }
+
+            return $fieldsPerTable->map(function ($fields) {
+                return explode(',', $fields);
+            });
         });
 
-        Request::macro('fields', function ($default = null) {
-            return collect($this->query(config('query-builder.parameters.fields'), $default));
+        Request::macro('sort', function ($default = null) {
+            return $this->query(config('query-builder.parameters.sort'), $default);
         });
 
         Request::macro('sorts', function ($default = null) {

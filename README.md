@@ -175,6 +175,20 @@ $users = QueryBuilder::for(User::class)
     ->get();
 // $users will contain all users that contain "seb" OR "freek" in their name
 ```
+#### Property Column Alias
+
+It can be useful to expose properties for filtering, that do not share the exact naming of your database column. If you wanted to allow filtering on columns that may have a prefix in the database, you can use the following notation.
+
+```php
+use Spatie\QueryBuilder\Filter;
+
+// GET /users?filter[name]=John
+$users = QueryBuilder::for(User::class)
+	->allowedFilters(Filter::exact('name', 'user_name')) // public filter, column name
+    ->get();
+// filter by the column 'user_name'
+```
+
 
 #### Exact filters
 
@@ -214,7 +228,7 @@ Consider the following scope on your model:
 ```php
 public function scopeStartsBefore(Builder $query, $date): Builder
 {
-    return $query->where('starts_at', '>=', Carbon::parse($date));
+    return $query->where('starts_at', '<=', Carbon::parse($date));
 }
 ```
 
@@ -268,6 +282,36 @@ $users = QueryBuilder::for(User::class)
     ->get();
 // $users will contain all users that have the `createPosts` permission
 ```
+#### Ignored values for filters
+
+You can specify a set of ignored values for every filter. This allows you to not apply a filter when these values are submitted.
+```php
+QueryBuilder::for(User::class)
+    ->allowedFilters(Filter::exact('name')->ignore(null))
+    ->get();
+```
+The `ignore()` method takes one or more values, where each may be an array of ignored values. Each of the following calls are valid:
+* `ignore('should_be_ignored')`  
+* `ignore(null, '-1')`
+* `ignore([null, 'ignore_me'],['also_ignored'])`
+
+Given an array of values to filter for, only the subset of non-ignored values get passed to the filter. If all values are ignored, the filter does not get applied.
+
+```php
+// GET /user?name=forbidden,John Doe
+QueryBuilder::for(User::class)
+    ->allowedFilters(Filter::exact('name')->ignore('forbidden'))
+    ->get();
+
+// Only users where name matches 'John Doe'
+
+// GET /user?name=ignored,ignored_too
+QueryBuilder::for(User::class)
+    ->allowedFilters(Filter::exact('name')->ignore(['ignored', 'ignored_too']))
+    ->get();
+
+// Filter does not get applied
+```
 
 ### Sorting
 
@@ -305,6 +349,18 @@ $users = QueryBuilder::for(User::class)
 // Will retrieve the users sorted by name
 ```
 
+You can use `-` if you want to have the default order sorted descendingly.
+
+``` php
+// GET /users
+$users = QueryBuilder::for(User::class)
+    ->defaultSort('-name')
+    ->allowedSorts('name', 'street')
+    ->get();
+
+// Will retrieve the users sorted descendingly by name
+```
+
 You can also pass in an array of sorts to the `allowedSorts()` method.
 
 ``` php
@@ -339,6 +395,18 @@ The SQL query will look like this:
 
 ```sql
 SELECT "id", "name" FROM "users"
+```
+
+Using the `allowedFields` method you can limit which fields (columns) are allowed to be queried in the request.
+
+When trying to select a column that's not specified in `allowedFields()` an `InvalidFieldQuery` exception will be thrown.
+
+``` php
+$users = QueryBuilder::for(User::class)
+    ->allowedFields('name')
+    ->get();
+
+// GET /users?fields[users]=email will throw an `InvalidFieldQuery` exception as `email` is not an allowed field.
 ```
 
 Selecting fields for included models works the same way. This is especially useful when including entire relationships when you only need a couple of columns. Consider the following example:

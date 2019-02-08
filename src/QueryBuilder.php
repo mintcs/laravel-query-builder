@@ -2,10 +2,12 @@
 
 namespace Spatie\QueryBuilder;
 
+use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Database\Eloquent\Builder;
 use Spatie\QueryBuilder\Exceptions\InvalidSortQuery;
+use Spatie\QueryBuilder\Exceptions\InvalidFieldQuery;
 use Spatie\QueryBuilder\Exceptions\InvalidAppendQuery;
 use Spatie\QueryBuilder\Exceptions\InvalidFilterQuery;
 use Spatie\QueryBuilder\Exceptions\InvalidIncludeQuery;
@@ -15,7 +17,10 @@ class QueryBuilder extends Builder
     /** @var \Illuminate\Support\Collection */
     protected $allowedFilters;
 
-    /** @var string|null */
+    /** @var \Illuminate\Support\Collection */
+    protected $allowedFields;
+
+    /** @var \Spatie\QueryBuilder\Sort|null */
     protected $defaultSort;
 
     /** @var \Illuminate\Support\Collection */
@@ -26,12 +31,6 @@ class QueryBuilder extends Builder
 
     /** @var \Illuminate\Support\Collection */
     protected $allowedAppends;
-
-    /** @var \Illuminate\Support\Collection */
-    protected $fields;
-
-    /** @var array */
-    protected $appends = [];
 
     /** @var \Illuminate\Http\Request */
     protected $request;
@@ -44,11 +43,189 @@ class QueryBuilder extends Builder
 
         $this->request = $request ?? request();
 
-        $this->parseSelectedFields();
+        $this->parseFields();
+    }
 
-        if ($this->request->sorts()) {
-            $this->allowedSorts('*');
+    /**
+     * Create a new QueryBuilder for a request and model.
+     *
+     * @param string|\Illuminate\Database\Query\Builder $baseQuery Model class or base query builder
+     * @param \Illuminate\Http\Request                  $request
+     *
+     * @return \Spatie\QueryBuilder\QueryBuilder
+     */
+    public static function for($baseQuery, ? Request $request = null): self
+    {
+        if (is_string($baseQuery)) {
+            $baseQuery = ($baseQuery)::query();
         }
+
+        return new static($baseQuery, $request ?? request());
+    }
+
+    public function allowedFilters($filters): self
+    {
+        $filters = is_array($filters) ? $filters : func_get_args();
+        $this->allowedFilters = collect($filters)->map(function ($filter) {
+            if ($filter instanceof Filter) {
+                return $filter;
+            }
+
+            return Filter::partial($filter);
+        });
+
+        $this->guardAgainstUnknownFilters();
+
+        $this->addFiltersToQuery($this->request->filters());
+
+        return $this;
+    }
+
+    public function allowedFields($fields): self
+    {
+        $fields = is_array($fields) ? $fields : func_get_args();
+
+        $this->allowedFields = collect($fields)
+            ->map(function (string $fieldName) {
+                if (! Str::contains($fieldName, '.')) {
+                    $modelTableName = $this->getModel()->getTable();
+
+                    return "{$modelTableName}.{$fieldName}";
+                }
+
+                return $fieldName;
+            });
+
+        if (! $this->allowedFields->contains('*')) {
+            $this->guardAgainstUnknownFields();
+        }
+
+        return $this;
+    }
+
+    public function parseFields()
+    {
+        $this->addFieldsToQuery($this->request->fields());
+    }
+
+    public function allowedIncludes($includes): self
+    {
+        $includes = is_array($includes) ? $includes : func_get_args();
+
+        $this->allowedIncludes = collect($includes)
+            ->flatMap(function ($include) {
+                return collect(explode('.', $include))
+                    ->reduce(function ($collection, $include) {
+                        if ($collection->isEmpty()) {
+                            return $collection->push($include);
+                        }
+
+                        return $collection->push("{$collection->last()}.{$include}");
+                    }, collect());
+            });
+
+        $this->guardAgainstUnknownIncludes();
+
+        $this->addIncludesToQuery($this->request->includes());
+
+        return $this;
+    }
+
+    public function allowedAppends($appends): self
+    {
+        $appends = is_array($appends) ? $appends : func_get_args();
+
+        $this->allowedAppends = collect($appends);
+
+        $this->guardAgainstUnknownAppends();
+
+        return $this;
+    }
+
+    public function allowedSorts($sorts): self
+    {
+        $sorts = is_array($sorts) ? $sorts : func_get_args();
+
+        if (! $this->request->sorts()) {
+            return $this;
+        }
+
+        $this->allowedSorts = collect($sorts)->map(function ($sort) {
+            if ($sort instanceof Sort) {
+                return $sort;
+            }
+
+            return Sort::field(ltrim($sort, '-'));
+        });
+
+        $this->guardAgainstUnknownSorts();
+
+        $this->parseSorts();
+
+        return $this;
+    }
+
+    /**
+     * @param string|\Spatie\QueryBuilder\Sort $sort
+     *
+     * @return \Spatie\QueryBuilder\QueryBuilder
+     */
+    public function defaultSort($sort): self
+    {
+        if (is_string($sort)) {
+            $sort = Sort::field($sort);
+        }
+
+        $this->defaultSort = $sort;
+
+        $this->parseSorts();
+
+        return $this;
+    }
+
+    public function getQuery()
+    {
+        if ($this->request->sorts() && ! $this->allowedSorts instanceof Collection) {
+            $this->addDefaultSorts();
+        }
+
+        return parent::getQuery();
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function get($columns = ['*'])
+    {
+        if ($this->request->sorts() && ! $this->allowedSorts instanceof Collection) {
+            $this->addDefaultSorts();
+        }
+
+        $results = parent::get($columns);
+
+        if ($this->request->appends()->isNotEmpty()) {
+            $results = $this->addAppendsToResults($results);
+        }
+
+        return $results;
+    }
+
+    public function paginate($perPage = null, $columns = ['*'], $pageName = 'page', $page = null)
+    {
+        if ($this->request->sorts() && ! $this->allowedSorts instanceof Collection) {
+            $this->addDefaultSorts();
+        }
+
+        return parent::paginate($perPage, $columns, $pageName, $page);
+    }
+
+    public function simplePaginate($perPage = null, $columns = ['*'], $pageName = 'page', $page = null)
+    {
+        if ($this->request->sorts() && ! $this->allowedSorts instanceof Collection) {
+            $this->addDefaultSorts();
+        }
+
+        return parent::simplePaginate($perPage, $columns, $pageName, $page);
     }
 
     /**
@@ -73,116 +250,13 @@ class QueryBuilder extends Builder
         $this->onDelete = $builder->getProtected('onDelete');
     }
 
-    /**
-     * Create a new QueryBuilder for a request and model.
-     *
-     * @param string|\Illuminate\Database\Query\Builder $baseQuery Model class or base query builder
-     * @param Request $request
-     *
-     * @return \Spatie\QueryBuilder\QueryBuilder
-     */
-    public static function for($baseQuery, ? Request $request = null) : self
+    protected function addFieldsToQuery(Collection $fields)
     {
-        if (is_string($baseQuery)) {
-            $baseQuery = ($baseQuery)::query();
-        }
-
-        return new static($baseQuery, $request ?? request());
-    }
-
-    public function allowedFilters($filters) : self
-    {
-        $filters = is_array($filters) ? $filters : func_get_args();
-        $this->allowedFilters = collect($filters)->map(function ($filter) {
-            if ($filter instanceof Filter) {
-                return $filter;
-            }
-
-            return Filter::partial($filter);
-        });
-
-        $this->guardAgainstUnknownFilters();
-
-        $this->addFiltersToQuery($this->request->filters());
-
-        return $this;
-    }
-
-    public function defaultSort($sort) : self
-    {
-        $this->defaultSort = $sort;
-
-        $this->addSortsToQuery($this->request->sorts($this->defaultSort));
-
-        return $this;
-    }
-
-    public function allowedSorts($sorts) : self
-    {
-        $sorts = is_array($sorts) ? $sorts : func_get_args();
-        if (! $this->request->sorts()) {
-            return $this;
-        }
-
-        $this->allowedSorts = collect($sorts);
-
-        if (! $this->allowedSorts->contains('*')) {
-            $this->guardAgainstUnknownSorts();
-        }
-
-        $this->addSortsToQuery($this->request->sorts($this->defaultSort));
-
-        return $this;
-    }
-
-    public function allowedIncludes($includes) : self
-    {
-        $includes = is_array($includes) ? $includes : func_get_args();
-
-        $this->allowedIncludes = collect($includes)
-            ->flatMap(function ($include) {
-                return collect(explode('.', $include))
-                    ->reduce(function ($collection, $include) {
-                        if ($collection->isEmpty()) {
-                            return $collection->push($include);
-                        }
-
-                        return $collection->push("{$collection->last()}.{$include}");
-                    }, collect());
-            });
-
-        $this->guardAgainstUnknownIncludes();
-
-        $this->addIncludesToQuery($this->request->includes());
-
-        return $this;
-    }
-
-    public function allowedAppends($appends) : self
-    {
-        $appends = is_array($appends) ? $appends : func_get_args();
-
-        $this->allowedAppends = collect($appends);
-
-        $this->guardAgainstUnknownAppends();
-
-        $this->appends = $this->request->appends();
-
-        return $this;
-    }
-
-    protected function parseSelectedFields()
-    {
-        $this->fields = $this->request->fields();
-
         $modelTableName = $this->getModel()->getTable();
-        $modelFields = $this->fields->get($modelTableName);
 
-        if (! $modelFields) {
-            $modelFields = '*';
+        if ($modelFields = $fields->get($modelTableName)) {
+            $this->select($this->prependFieldsWithTableName($modelFields, $modelTableName));
         }
-
-        $this->select($this->prependFieldsWithTableName(explode(',', $modelFields), $modelTableName));
     }
 
     protected function prependFieldsWithTableName(array $fields, string $tableName): array
@@ -192,15 +266,9 @@ class QueryBuilder extends Builder
         }, $fields);
     }
 
-    protected function getFieldsForRelatedTable(string $relation): array
+    protected function getFieldsForIncludedTable(string $relation): array
     {
-        $fields = $this->fields->get($relation);
-
-        if (! $fields) {
-            return [];
-        }
-
-        return explode(',', $fields);
+        return $this->request->fields()->get($relation, []);
     }
 
     protected function addFiltersToQuery(Collection $filters)
@@ -212,7 +280,7 @@ class QueryBuilder extends Builder
         });
     }
 
-    protected function findFilter(string $property) : ? Filter
+    protected function findFilter(string $property): ?Filter
     {
         return $this->allowedFilters
             ->first(function (Filter $filter) use ($property) {
@@ -220,15 +288,24 @@ class QueryBuilder extends Builder
             });
     }
 
-    protected function addSortsToQuery(Collection $sorts)
+    protected function parseSorts()
     {
-        $this->filterDuplicates($sorts)
-            ->each(function (string $sort) {
-                $descending = $sort[0] === '-';
+        $sorts = $this->request->sorts();
 
-                $key = ltrim($sort, '-');
+        if ($sorts->isEmpty()) {
+            optional($this->defaultSort)->sort($this);
+        }
 
-                $this->orderBy($key, $descending ? 'desc' : 'asc');
+        $this
+            ->filterDuplicates($sorts)
+            ->each(function (string $property) {
+                $descending = $property[0] === '-';
+
+                $key = ltrim($property, '-');
+
+                $sort = $this->findSort($key);
+
+                $sort->sort($this, $descending);
             });
     }
 
@@ -251,17 +328,47 @@ class QueryBuilder extends Builder
         });
     }
 
+    protected function findSort(string $property): ?Sort
+    {
+        return $this->allowedSorts
+            ->merge([$this->defaultSort])
+            ->first(function (Sort $sort) use ($property) {
+                return $sort->isForProperty($property);
+            });
+    }
+
+    protected function addDefaultSorts()
+    {
+        $this->allowedSorts = collect($this->request->sorts($this->defaultSort))
+            ->map(function ($sort) {
+                if ($sort instanceof Sort) {
+                    return $sort;
+                }
+
+                return Sort::field(ltrim($sort, '-'));
+            });
+
+        $this->parseSorts();
+    }
+
+    protected function addAppendsToResults(Collection $results)
+    {
+        $appends = $this->request->appends();
+
+        return $results->each->append($appends->toArray());
+    }
+
     protected function addIncludesToQuery(Collection $includes)
     {
         $includes
-            ->map('camel_case')
+            ->map([Str::class, 'camel'])
             ->map(function (string $include) {
                 return collect(explode('.', $include));
             })
             ->flatMap(function (Collection $relatedTables) {
                 return $relatedTables
                     ->mapWithKeys(function ($table, $key) use ($relatedTables) {
-                        $fields = $this->getFieldsForRelatedTable(snake_case($table));
+                        $fields = $this->getFieldsForIncludedTable(Str::snake($table));
 
                         $fullRelationName = $relatedTables->slice(0, $key + 1)->implode('.');
 
@@ -279,17 +386,6 @@ class QueryBuilder extends Builder
             });
     }
 
-    public function setAppendsToResult($result)
-    {
-        $result->map(function ($item) {
-            $item->append($this->appends->toArray());
-
-            return $item;
-        });
-
-        return $result;
-    }
-
     protected function guardAgainstUnknownFilters()
     {
         $filterNames = $this->request->filters()->keys();
@@ -303,16 +399,38 @@ class QueryBuilder extends Builder
         }
     }
 
+    protected function guardAgainstUnknownFields()
+    {
+        $fields = $this->request->fields()
+            ->map(function ($fields, $model) {
+                $tableName = Str::snake(preg_replace('/-/', '_', $model));
+
+                $fields = array_map([Str::class, 'snake'], $fields);
+
+                return $this->prependFieldsWithTableName($fields, $tableName);
+            })
+            ->flatten()
+            ->unique();
+
+        $diff = $fields->diff($this->allowedFields);
+
+        if ($diff->count()) {
+            throw InvalidFieldQuery::fieldsNotAllowed($diff, $this->allowedFields);
+        }
+    }
+
     protected function guardAgainstUnknownSorts()
     {
-        $sorts = $this->request->sorts()->map(function ($sort) {
+        $sortNames = $this->request->sorts()->map(function ($sort) {
             return ltrim($sort, '-');
         });
 
-        $diff = $sorts->diff($this->allowedSorts);
+        $allowedSortNames = $this->allowedSorts->map->getProperty();
+
+        $diff = $sortNames->diff($allowedSortNames);
 
         if ($diff->count()) {
-            throw InvalidSortQuery::sortsNotAllowed($diff, $this->allowedSorts);
+            throw InvalidSortQuery::sortsNotAllowed($diff, $allowedSortNames);
         }
     }
 
@@ -336,16 +454,5 @@ class QueryBuilder extends Builder
         if ($diff->count()) {
             throw InvalidAppendQuery::appendsNotAllowed($diff, $this->allowedAppends);
         }
-    }
-
-    public function get($columns = ['*'])
-    {
-        $result = parent::get($columns);
-
-        if (count($this->appends) > 0) {
-            $result = $this->setAppendsToResult($result);
-        }
-
-        return $result;
     }
 }

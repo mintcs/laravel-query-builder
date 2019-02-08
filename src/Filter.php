@@ -2,6 +2,7 @@
 
 namespace Spatie\QueryBuilder;
 
+use Illuminate\Support\Collection;
 use Illuminate\Database\Eloquent\Builder;
 use Spatie\QueryBuilder\Filters\FiltersExact;
 use Spatie\QueryBuilder\Filters\FiltersScope;
@@ -16,37 +17,54 @@ class Filter
     /** @var string */
     protected $property;
 
-    public function __construct(string $property, $filterClass)
+    /** @var string */
+    protected $columnName;
+
+    /** @var Collection */
+    protected $ignored;
+
+    public function __construct(string $property, $filterClass, $columnName = null)
     {
         $this->property = $property;
+
         $this->filterClass = $filterClass;
+
+        $this->ignored = Collection::make();
+
+        $this->columnName = $columnName ?? $property;
     }
 
     public function filter(Builder $builder, $value)
     {
+        $valueToFilter = $this->resolveValueForFiltering($value);
+
+        if (is_null($valueToFilter)) {
+            return;
+        }
+
         $filterClass = $this->resolveFilterClass();
 
-        ($filterClass)($builder, $value, $this->property);
+        ($filterClass)($builder, $valueToFilter, $this->columnName);
     }
 
-    public static function exact(string $property) : self
+    public static function exact(string $property, $columnName = null) : self
     {
-        return new static($property, FiltersExact::class);
+        return new static($property, FiltersExact::class, $columnName);
     }
 
-    public static function partial(string $property) : self
+    public static function partial(string $property, $columnName = null) : self
     {
-        return new static($property, FiltersPartial::class);
+        return new static($property, FiltersPartial::class, $columnName);
     }
 
-    public static function scope(string $property) : self
+    public static function scope(string $property, $columnName = null) : self
     {
-        return new static($property, FiltersScope::class);
+        return new static($property, FiltersScope::class, $columnName);
     }
 
-    public static function custom(string $property, $filterClass) : self
+    public static function custom(string $property, $filterClass, $columnName = null) : self
     {
-        return new static($property, $filterClass);
+        return new static($property, $filterClass, $columnName);
     }
 
     public function getProperty(): string
@@ -59,6 +77,25 @@ class Filter
         return $this->property === $property;
     }
 
+    public function ignore(...$values): self
+    {
+        $this->ignored = $this->ignored
+            ->merge($values)
+            ->flatten();
+
+        return $this;
+    }
+
+    public function getIgnored(): array
+    {
+        return $this->ignored->toArray();
+    }
+
+    public function getColumnName(): string
+    {
+        return $this->columnName;
+    }
+
     private function resolveFilterClass(): CustomFilter
     {
         if ($this->filterClass instanceof CustomFilter) {
@@ -66,5 +103,16 @@ class Filter
         }
 
         return new $this->filterClass;
+    }
+
+    private function resolveValueForFiltering($property)
+    {
+        if (is_array($property)) {
+            $remainingProperties = array_diff($property, $this->ignored->toArray());
+
+            return ! empty($remainingProperties) ? $remainingProperties : null;
+        }
+
+        return ! $this->ignored->contains($property) ? $property : null;
     }
 }

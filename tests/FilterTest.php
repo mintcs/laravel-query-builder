@@ -5,8 +5,10 @@ namespace Spatie\QueryBuilder\Tests;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Spatie\QueryBuilder\Filter;
+use Illuminate\Support\Facades\DB;
 use Spatie\QueryBuilder\QueryBuilder;
 use Illuminate\Database\Eloquent\Builder;
+use Spatie\QueryBuilder\Filters\FiltersExact;
 use Spatie\QueryBuilder\Tests\Models\TestModel;
 use Spatie\QueryBuilder\Exceptions\InvalidFilterQuery;
 use Spatie\QueryBuilder\Filters\Filter as CustomFilter;
@@ -78,6 +80,24 @@ class FilterTest extends TestCase
             ->get();
 
         $this->assertCount(0, $models);
+    }
+
+    /** @test */
+    public function it_can_filter_a_custom_base_query_with_select()
+    {
+        $request = new Request([
+            'filter' => ['name' => 'john'],
+        ]);
+
+        $queryBuilderSql = QueryBuilder::for(TestModel::select('id', 'name'), $request)
+            ->allowedFilters('name', 'id')
+            ->toSql();
+
+        $expectedSql = TestModel::select('id', 'name')
+            ->where(DB::raw('LOWER("name")'), 'LIKE', 'john')
+            ->toSql();
+
+        $this->assertEquals($expectedSql, $queryBuilderSql);
     }
 
     /** @test */
@@ -276,6 +296,99 @@ class FilterTest extends TestCase
 
         $this->assertEquals(['unknown filter'], $exception->unknownFilters->all());
         $this->assertEquals(['allowed filter'], $exception->allowedFilters->all());
+    }
+
+    /** @test */
+    public function it_allows_for_adding_ignorable_values()
+    {
+        $shouldBeIgnored = ['', '-1', null, 'ignored_string', 'another_ignored_string'];
+
+        $filter = Filter::exact('name')->ignore($shouldBeIgnored[0]);
+        $filter
+            ->ignore($shouldBeIgnored[1], $shouldBeIgnored[2])
+            ->ignore([$shouldBeIgnored[3], $shouldBeIgnored[4]]);
+
+        $valuesIgnoredByFilter = $filter->getIgnored();
+
+        $this->assertEquals(sort($shouldBeIgnored), sort($valuesIgnoredByFilter));
+    }
+
+    /** @test */
+    public function it_should_not_apply_a_filter_if_the_supplied_value_is_ignored()
+    {
+        $models = $this
+            ->createQueryFromFilterRequest([
+                'name' => '-1',
+            ])
+            ->allowedFilters(Filter::exact('name')->ignore('-1'))
+            ->get();
+
+        $this->assertCount(TestModel::count(), $models);
+    }
+
+    /** @test */
+    public function it_should_apply_the_filter_on_the_subset_of_allowed_values()
+    {
+        TestModel::create(['name' => 'John Doe']);
+        TestModel::create(['name' => 'John Deer']);
+
+        $models = $this
+            ->createQueryFromFilterRequest([
+                'name' => 'John Deer,John Doe',
+            ])
+            ->allowedFilters(Filter::exact('name')->ignore('John Deer'))
+            ->get();
+
+        $this->assertCount(1, $models);
+    }
+
+    /** @test */
+    public function it_can_take_an_argument_for_custom_column_name_resolution()
+    {
+        $filter = Filter::custom('property_name', FiltersExact::class, 'property_column_name');
+
+        $this->assertInstanceOf(Filter::class, $filter);
+        $this->assertClassHasAttribute('columnName', get_class($filter));
+    }
+
+    /** @test */
+    public function it_sets_property_column_name_to_property_name_by_default()
+    {
+        $filter = Filter::custom('property_name', FiltersExact::class);
+
+        $this->assertEquals($filter->getProperty(), $filter->getColumnName());
+    }
+
+    /** @test */
+    public function it_resolves_queries_using_property_column_name()
+    {
+        $filter = Filter::custom('nickname', FiltersExact::class, 'name');
+
+        TestModel::create(['name' => 'abcdef']);
+
+        $models = $this
+            ->createQueryFromFilterRequest([
+                'nickname' => 'abcdef',
+            ])
+            ->allowedFilters($filter)
+            ->get();
+
+        $this->assertCount(1, $models);
+    }
+
+    /** @test */
+    public function it_can_filter_using_boolean_flags()
+    {
+        TestModel::query()->update(['is_visible' => true]);
+        $filter = Filter::exact('is_visible');
+
+        $models = $this
+            ->createQueryFromFilterRequest(['is_visible' => 'false'])
+            ->allowedFilters($filter)
+            ->get();
+
+        $this->assertCount(0, $models);
+        $this->assertGreaterThan(0, TestModel::all()->count());
     }
 
     protected function createQueryFromFilterRequest(array $filters): QueryBuilder

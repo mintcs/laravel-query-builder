@@ -2,6 +2,50 @@
 
 All notable changes to `laravel-query-builder` will be documented in this file
 
+## 2.0.0 - unreleased
+
+- moved features to traits and general cleanup
+- removed request macros
+- started using `QueryBuilderRequest` to read data from the current request
+- use Str:: and Arr:: instead of helper methods
+
+## 1.13.1 - 2019-01-18
+
+- fix detection of false-positives for ignored values (#154)
+- fix broken morphTo includes (#130)
+
+## 1.13.0 - 2019-01-12
+
+**BROKEN - do not use**
+
+- allow ignoring specific filter values using `$filter->ignore()`
+- allow filtering related model attributes `allowedFilters('related-model.name')`
+- fix for filtering by relation model properties
+- add custom sort classes
+
+## 1.12.0 - 2018-11-27
+
+- allow differently named columns
+
+## 1.11.2 - 2018-10-30
+
+- fix exception when using filters with nested arrays (#117)
+- fix overwritten fields when using `allowedIncludes` with many-to-many relationships (#118)
+
+## 1.11.1 - 2018-10-09
+
+- fix exception when using `allowedFields()` but selecting none
+
+## 1.11.0 - 2018-10-03
+
+- add `allowedFields` method
+- fix & cleanup `Request::fields()` macro
+- fix fields option (`SELECT * FROM table` instead of `SELECT table.* FROM table`)
+
+## 1.10.4 - 2018-10-02
+
+- fix parsing empty filters from url
+
 ## 1.10.3 - 2018-09-17
 
 - improve compatibility with Lumen
